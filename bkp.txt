@@ -1,0 +1,186 @@
+import os
+from pyOpenBCI import OpenBCICyton
+from supabase import create_client, Client
+
+def print_raw(sample):
+    data = {
+        'pos1': sample.channels_data[0],
+        'pos2': sample.channels_data[1],
+        'pos3': sample.channels_data[2],
+        'pos4': sample.channels_data[3],
+        'pos5': sample.channels_data[4],
+        'pos6': sample.channels_data[5],
+        'pos7': sample.channels_data[6],
+    }
+    supabase.table('sensor_data').update(data).eq('id', 1).execute()
+
+board = OpenBCICyton(port='/dev/tty.usbserial-DM01MVJX', daisy=False)
+
+def print_hi(name):
+    print(f'Hi, {name}')  # Press ⌘F8 to toggle the breakpoint.
+
+if __name__ == '__main__':
+    print_hi('PyCharm')
+    board.start_stream(print_raw)
+
+
+url: str = os.environ.get("https://sfesooveqwsgfzkosmxu.supabase.co")
+key: str = os.environ.get("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNmZXNvb3ZlcXdzZ2Z6a29zbXh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTI5OTg0MzMsImV4cCI6MjAyODU3NDQzM30.VsmHNhrmVG1Iznyva5-KPDykWAo9F58B72y2lZx_blw")
+supabase: Client = create_client(url, key)
+
+
+
+
+
+
+
+import os
+from pyOpenBCI import OpenBCICyton
+
+
+def print_raw(sample):
+    # Collect all the data from the sample
+    data = {
+        'timestamp': sample.id,  # or sample.time_stamp depending on library version
+        'channels_data': sample.channels_data,
+        'accelerometer_data': sample.aux_data if sample.aux_data else 'No AUX data',
+    }
+
+    # Print the complete data dictionary
+    print("Sample Data:")
+    print("Timestamp:", data['timestamp'])
+    print("Channel Data:", data['channels_data'])
+    print("Accelerometer Data:", data['accelerometer_data'])
+    print("----")
+
+
+# Specify the correct port here; make sure it matches the one found via 'ls /dev/tty.*'
+board = OpenBCICyton(port='/dev/tty.usbserial-DM01MVJX', daisy=False)
+
+
+def print_hi(name):
+    print(f'Hi, {name}')  # A simple greeting, can be removed if unnecessary
+
+
+if __name__ == '__main__':
+    print_hi('PyCharm')  # A placeholder greeting; can be removed
+    board.start_stream(print_raw)  # Start streaming data and print each sample
+
+
+
+
+
+
+import datetime
+import serial
+import sys
+import time
+import struct
+from threading import Timer
+
+# Define constants for the OpenBCI setup
+SAMPLE_RATE = 250.0  # Hz
+START_BYTE = 0xA0  # Start of data packet
+END_BYTE = 0xC0  # End of data packet
+
+class OpenBCICyton:
+    def __init__(self, port=None, daisy=False, baud=115200, timeout=None, max_packets_skipped=1):
+        self.port = port or self.find_port()
+        self.baud = baud
+        self.timeout = timeout
+        self.daisy = daisy
+        self.max_packets_skipped = max_packets_skipped
+        self.packets_dropped = 0
+        self.streaming = False
+        self.read_state = 0
+        self.board_type = "CytonDaisy" if self.daisy else "Cyton"
+        self.ser = serial.Serial(port=self.port, baudrate=self.baud, parity=serial.PARITY_NONE,
+                                 stopbits=serial.STOPBITS_ONE, bytesize=serial.EIGHTBITS, timeout=self.timeout)
+        print('Serial connection established.')
+        self.initialize_board()
+
+    def find_port(self):
+        if sys.platform.startswith('win'):
+            ports = ['COM%s' % (i + 1) for i in range(256)]
+        elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
+            ports = glob.glob('/dev/ttyUSB*')
+        elif sys.platform.startswith('darwin'):
+            ports = glob.glob('/dev/tty.usbserial*')
+        else:
+            raise EnvironmentError('Unsupported platform')
+        for port in ports:
+            try:
+                s = serial.Serial(port=port, baudrate=self.baud, timeout=self.timeout)
+                s.close()
+                return port
+            except (OSError, serial.SerialException):
+                pass
+        raise OSError('Cannot find OpenBCI port')
+
+    def initialize_board(self):
+        """Perform a soft reset of the board and prepare it for data streaming."""
+        time.sleep(2)  # Give the board time to settle
+        self.ser.write(b'v')  # Send a soft reset command to the board
+        time.sleep(1)  # Wait for the board to reset
+
+    def start_stream(self, callback):
+        """Start handling streaming data from the board."""
+        self.ser.write(b'b')  # Send command to begin binary streaming
+        self.streaming = True
+        print("Streaming started.")
+        self.check_connection()
+
+        while self.streaming:
+            sample = self.parse_board_data()
+            if sample:
+                callback(sample)
+
+    def stop_stream(self):
+        """Stops the data stream from the Cyton board."""
+        self.streaming = False
+        self.ser.write(b's')  # Send command to stop streaming
+        print("Streaming stopped.")
+
+    def parse_board_data(self):
+        """Parses the data from the Cyton board into a format that can be used."""
+        try:
+            if self.read_state == 0:
+                b = self.ser.read(1)
+                if not b:
+                    print("No data received. Waiting for data...")
+                    return None
+                if struct.unpack('B', b)[0] == START_BYTE:
+                    packet_id = struct.unpack('B', self.ser.read(1))[0]
+                    self.read_state = 1
+                    print(f"Start byte found, packet ID: {packet_id}")
+            # Implement other states similarly with checks for empty reads
+            return None  # Return None or a valid data structure if a complete packet is parsed
+        except struct.error as e:
+            print(f"Error parsing data: {e}")
+            return None
+
+    def check_connection(self):
+        """Check if the connection is alive and attempt to reconnect if necessary."""
+        if self.packets_dropped > self.max_packets_skipped:
+            print("Connection lost. Trying to reconnect.")
+            self.reconnect()
+        Timer(2, self.check_connection).start()  # Schedule next check
+
+    def reconnect(self):
+        """Attempts to reconnect to the Cyton board."""
+        self.stop_stream()
+        time.sleep(0.5)
+        self.start_stream(print_data)
+
+def print_data(sample):
+    """Callback function to handle data received from the OpenBCI board."""
+    print("Received data:", sample)
+
+if __name__ == '__main__':
+    # Replace 'COM3' with the appropriate port found via the 'find_port' method or set manually
+    board = OpenBCICyton(port='/dev/tty.usbserial-DM01MVJX', daisy=False, baud=115200, timeout=1)
+    try:
+        board.start_stream(print_data)
+    except KeyboardInterrupt:
+        board.stop_stream()
+        print("Stream stopped by user.")
